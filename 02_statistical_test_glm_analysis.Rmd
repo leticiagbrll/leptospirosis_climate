@@ -1,0 +1,683 @@
+---
+title: "PCS5787 - CIÊNCIA DE DADOS E BIG DATA"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r bibliotecas, include=FALSE}
+
+# install.packages("FSA")
+# install.packages("glmmTMB")
+
+library(janitor)
+library(tidyverse)
+library(FSA)
+library(MASS)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(glmmTMB)
+library(tidyr)
+
+```
+
+```{r leitura dos dados, include=FALSE}
+
+DADOS_POLI = read.csv("TABELA_UNIFICADA.csv", sep = ";", dec = ".")
+
+str(DADOS_POLI)
+
+```
+
+```{r ajuste das variaveis, include=FALSE}
+
+DADOS_POLI$MES <- factor(DADOS_POLI$MES, levels = c("Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"))
+DADOS_POLI$ESTADO <- as.factor(DADOS_POLI$ESTADO)
+
+str(DADOS_POLI)
+
+```
+
+```{r descritiva}
+
+summary(DADOS_POLI)
+
+```
+
+- Temperatura: O valor médio de 24,8 °C confirma o perfil tropical/subtropical do país, com variação moderada entre 15–30 °C. A amplitude mostra bem as diferenças regionais, visto que o Brasil tem regiões mais frias, como o Sul, e regiões mais quentes, como o Norte e Nordeste.
+
+- Umidade Relativa: Os valores estão altos e homogêneos, mostrando que o Brasil mantém ambiente úmido ao longo do ano, fator favorável à persistência ambiental da Leptospira spp.. Diferenças sazonais são esperadas: menor umidade no inverno e maiores valores no verão/outono.
+
+- Precipitação: A chuva é bastante variável, o que faz sentido dado o tamanho do país. A mediana de ~40 mm indica que metade dos meses tem precipitação moderada, enquanto os máximos (acima de 300 mm) correspondem a meses chuvosos em regiões amazônicas ou litorâneas.
+
+- Casos: apresentam distribuição altamente assimétrica (muitos meses com poucos casos e alguns com picos extremos). Essa dispersão é comum em doenças ambientais, refletindo surtos localizados. 
+
+
+```{r definição de estação, include=FALSE}
+
+DADOS_POLI <- DADOS_POLI |>
+  mutate(
+    ESTACAO = case_when(
+      MES %in% c("Dezembro", "Janeiro", "Fevereiro")  ~ "Verao",
+      MES %in% c("Marco", "Abril", "Maio")   ~ "Outono",
+      MES %in% c("Junho", "Julho", "Agosto")   ~ "Inverno",
+      MES %in% c("Setembro", "Outubro", "Novembro") ~ "Primavera",
+      TRUE ~ NA_character_
+    ),
+    ESTACAO = factor(ESTACAO, levels = c("Verao","Outono","Inverno","Primavera"))
+  )
+
+```
+
+```{r boxplot casos estação}
+
+ggplot(DADOS_POLI, aes(x = ESTACAO, y = CASOS, fill = ESTACAO)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_log10() +
+  labs(title = "Distribuição dos casos de leptospirose por estação",
+       x = "Estação do ano", y = "Casos mensais") +
+  theme_minimal(base_size = 13)
+
+
+```
+
+- O Verão e o Outono apresentam valores medianos ligeiramnete mais altos de casos mensais, indicando que a leptospirose tende a ser mais frequente nesse período - coincde com o período de maior precipitação e umidade no brasil. 
+
+- Há grande dispersão em todas as estações, o que indica que, mesmo dentro de uma mesma estação, há meses de calmaria e outros picos de casos, compatível com o comportamento epidêmico e dependente de eventos de chuva. 
+
+O boxplot demonstra que, embora os casos mensais de leptospirose sejam geralmente baixos, há forte assimetria na distribuição, com surtos pontuais concentrados no Verão e Outono. Esses resultados são coerentes com o padrão climático tropical brasileiro, em que o aumento da umidade e das chuvas cria condições ideais para a disseminação ambiental da bactéria e exposição populacional. Assim, o gráfico reforça a sazonalidade da leptospirose, que será confirmada estatisticamente pelo teste de Kruskal–Wallis e pelo pós-teste de Dunn.
+
+
+```{r grafico serie temporal de casos}
+
+casos_ano <- DADOS_POLI %>%
+  group_by(ANO) %>%
+  summarise(casos_totais = sum(CASOS, na.rm = TRUE))
+
+ggplot(casos_ano, aes(x = ANO, y = casos_totais)) +
+  geom_line(color = "#0072B2", linewidth = 1) +
+  geom_point(color = "#D55E00", size = 2) +
+  labs(title = "Serie temporal dos casos de leptospirose (2008–2023)",
+       x = "Ano", y = "Numero total de casos") +
+  theme_minimal(base_size = 13)
+
+```
+
+- O período entre 2010 e 2015 mostra maiores valores, com um pico máximo por volta de 2014, quando os casos ultrapassaram 2.200 registros. A partir de 2015–2016, observa-se queda acentuada, chegando a um dos valores mínimos em 2019–2020.Há uma pequena recuperação dos casos em 2021–2023, mas sem retornar aos níveis mais altos observados na primeira metade da série.
+
+- O aumento observado após 2021 pode estar associado à retomada das atividades urbanas pós-pandemia, com maior exposição humana e eventos climáticos extremos (La Niña), que elevam a pluviosidade em certas regiões.
+
+- O comportamento é cíclico e irregular, sugerindo que a leptospirose tem uma forte dependência de fatores ambientais e sazonais variáveis, como o regime de chuvas e temperatura.
+
+
+```{r agregar médias mensais, include=FALSE}
+
+# 1) Mesma limpeza para tudo
+dados_clean <- DADOS_POLI %>%
+  dplyr::select(MES, TEMPERATURA, UMIDADE, PRECIPITACAO) %>%
+  tidyr::drop_na()
+
+# 2) Uma tabela única de médias mensais
+clima_mensal <- dados_clean %>%
+  group_by(MES) %>%
+  summarise(
+    TEMPERATURA  = mean(TEMPERATURA),
+    UMIDADE      = mean(UMIDADE),
+    PRECIPITACAO = mean(PRECIPITACAO),
+    .groups = "drop"
+  )
+
+
+```
+
+```{r gráfico média mensal de temperatura}
+
+ggplot(clima_mensal, aes(x = MES, y = TEMPERATURA, group = 1)) +
+  geom_line(color = "#E41A1C", linewidth = 1.2) +
+  geom_point(color = "#E41A1C") +
+  labs(title = "Temperatura media mensal",
+       x = "Mes", y = "Temperatura media") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+- Os valores são bastante estáveis, variando entre aproximadamente 24,7°C e 24,85°C, o que reflete a média nacional brasileira. 
+
+- O gráfico reflete o ciclo térmico anual esperado, com redução das temperaturas nos meses de outono/inverno e aquecimento progressivo até o verão.
+
+```{r gráfico média mensal de umidade}
+
+ggplot(clima_mensal, aes(x = MES, y = UMIDADE, group = 1)) +
+  geom_line(color = "#377EB8", linewidth = 1.2) +
+  geom_point(color = "#377EB8") +
+  labs(title = "Umidade relativa media mensal",
+       x = "Mes", y = "Umidade media") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+- Os valores são elevados e estáveis, variando entre 72,5% e 73,1%, o que é esperado para o clima brasileiro, caracterizado por alta umidade média anual.
+
+- O gráfico revela o padrão esperado — umidade maior no verão e início do outono, e menor no inverno e início da primavera.
+
+```{r gráfico média mensal de precipitação}
+
+ggplot(clima_mensal, aes(x = MES, y = PRECIPITACAO, group = 1)) +
+  geom_line(color = "#4DAF4A", linewidth = 1.2) +
+  geom_point(color = "#4DAF4A") +
+  labs(title = "Precipitacao media mensal (mm)",
+       x = "Mes", y = "Precipitacao media (mm)") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+- Os valores médios mensais variam entre aproximadamente 47 mm e 51,5 mm. 
+
+- Março e Abril apresentam os maiores volumes médios (acima de 51 mm). Outro pequeno pico aparece em setembro–novembro, indicando o início do retorno das chuvas da primavera.
+
+- Maio e Agosto mostram os menores valores médios (47–48 mm), representando o inverno seco característico de grande parte do território brasileiro.
+
+```{r}
+
+clima_long <- clima_mensal %>%
+  pivot_longer(cols = c(TEMPERATURA, UMIDADE, PRECIPITACAO),
+               names_to = "variavel", values_to = "valor") %>%
+  group_by(variavel) %>%
+  mutate(valor_z = as.numeric(scale(valor))) %>%  # média=0, sd=1
+  ungroup()
+
+cores <- c(TEMPERATURA="#E41A1C", UMIDADE="#377EB8", PRECIPITACAO="#4DAF4A")
+
+ggplot(clima_long, aes(x = MES, y = valor_z, group = variavel, color = variavel)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2) +
+  scale_color_manual(values = cores,
+                     labels = c("Precipitacao (z)","Temperatura (z)","Umidade (z)"),
+                     name = NULL) +
+  labs(title = "Ciclo climatico mensal (variaveis padronizadas)",
+       subtitle = "Valores em z-score (media 0, desvio 1) para comparacao direta",
+       x = "Mes", y = "Valor padronizado (z)") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+
+```
+
+Este gráfico mostra como precipitação (verde), temperatura (vermelha) e umidade relativa (azul) variam ao longo do ano, padronizadas em z-score (média 0 e desvio padrão 1).
+Isso significa que os valores positivos indicam acima da média anual e os negativos abaixo da média anual, permitindo comparar tendências entre variáveis de diferentes unidades.
+
+- Temperatura: Mantém-se levemente abaixo da média de janeiro a maio, atingindo o ponto mais baixo no outono (abril). A partir de julho, cresce de forma contínua, ultrapassando a média e atingindo o pico entre outubro e dezembro - esse padrão corresponde ao aquecimento progressivo após o inverno, com temperaturas mais elevadas na primavera e início do verão.
+
+- Umidade: O comportamento da umidade acompanha o regime pluviométrico — elevada durante o período chuvoso e baixa na estação seca.
+
+- Precipitação: Apresenta pico forte em março, indicando o auge das chuvas. Declina fortemente até maio, atingindo o mínimo no final do inverno (agosto–setembro). A partir de setembro, há recuperação das chuvas, com aumento rápido até novembro.
+
+
+```{r serie temporal padronizada temperatura vs casos}
+
+dados_ts <- DADOS_POLI %>%
+  group_by(ANO, MES) %>%
+  summarise(temp = mean(TEMPERATURA, na.rm = TRUE),
+            casos = sum(CASOS, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(data = as.Date(paste(ANO, match(MES, levels(DADOS_POLI$MES)), "01", sep = "-")),
+         casos_esc = scale(casos),
+         temp_esc  = scale(temp))
+
+ggplot(dados_ts, aes(x = data)) +
+  geom_line(aes(y = casos_esc, color = "Casos (esc.)"), linewidth = 1) +
+  geom_line(aes(y = temp_esc, color = "Temperatura (esc.)"), linewidth = 1, linetype = "dashed") +
+  scale_color_manual(values = c("#E41A1C","#377EB8")) +
+  labs(title = "Serie temporal padronizada: temperatura vs. casos de leptospirose",
+       x = "Ano", y = "Valor padronizado (Z-score)",
+       color = "Variavel") +
+  theme_minimal(base_size = 13)
+
+
+```
+
+- Períodos de temperatura acima da média tendem a coincidir com aumentos nos casos de leptospirose, embora nem todo pico térmico resulte em surto, indicando que outros fatores climáticos (chuva e umidade) também influenciam a transmissão.
+
+- A leptospirose é fortemente condicionada a eventos de chuva e alagamentos, que, por sua vez, estão relacionados a estações mais quentes. Assim, o aumento de temperatura funciona como indicador indireto de condições propícias à transmissão.
+
+- As curvas são parcialmente sincronizadas, mas não perfeitamente sobrepostas — o que é esperado, pois o efeito da temperatura sobre os casos pode ter defasagem temporal.
+
+```{r serie temporal padronizada umidade vs casos}
+
+dados_ts <- DADOS_POLI %>%
+  group_by(ANO, MES) %>%
+  summarise(temp = mean(UMIDADE, na.rm = TRUE),
+            casos = sum(CASOS, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(data = as.Date(paste(ANO, match(MES, levels(DADOS_POLI$MES)), "01", sep = "-")),
+         casos_esc = scale(casos),
+         temp_esc  = scale(temp))
+
+# Plot duplo
+ggplot(dados_ts, aes(x = data)) +
+  geom_line(aes(y = casos_esc, color = "Casos (esc.)"), linewidth = 1) +
+  geom_line(aes(y = temp_esc, color = "Umidade (esc.)"), linewidth = 1, linetype = "dashed") +
+  scale_color_manual(values = c("#E41A1C","#377EB8")) +
+  labs(title = "Serie temporal padronizada: umidade vs. casos de leptospirose",
+       x = "Ano", y = "Valor padronizado (Z-score)",
+       color = "Variavel") +
+  theme_minimal(base_size = 13)
+
+
+```
+
+- Quando a umidade aumenta, os casos tendem a subir; quando diminui, os casos caem (padrão típico de doenças associadas à exposição hídrica e enchentes).
+
+- O padrão temporal reforça que a umidade é um dos principais moduladores ambientais da leptospirose, mais consistente até do que a temperatura isoladamente.
+
+```{r serie temporal padronizada precipitação vs casos}
+
+dados_ts <- DADOS_POLI %>%
+  group_by(ANO, MES) %>%
+  summarise(temp = mean(PRECIPITACAO, na.rm = TRUE),
+            casos = sum(CASOS, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(data = as.Date(paste(ANO, match(MES, levels(DADOS_POLI$MES)), "01", sep = "-")),
+         casos_esc = scale(casos),
+         temp_esc  = scale(temp))
+
+ggplot(dados_ts, aes(x = data)) +
+  geom_line(aes(y = casos_esc, color = "Casos (esc.)"), linewidth = 1) +
+  geom_line(aes(y = temp_esc, color = "Precipitacao (esc.)"), linewidth = 1, linetype = "dashed") +
+  scale_color_manual(values = c("#E41A1C","#377EB8")) +
+  labs(title = "Serie temporal padronizada: precipitacao vs. casos de leptospirose",
+       x = "Ano", y = "Valor padronizado (Z-score)",
+       color = "Variavel") +
+  theme_minimal(base_size = 13)
+
+
+```
+
+- Há forte correspondência visual entre os períodos mais chuvosos e os aumentos de leptospirose.
+
+- O fato de os picos de chuva e casos ocorrerem quase simultaneamente sugere que a resposta epidemiológica é rápida, ou seja, as infecções aumentam logo após eventos de precipitação intensa.
+
+### _**CORRELAÇÃO DE SPEARMAN**_
+
+```{r correlação global}
+
+corr_global <- list(
+  casos_temp  = cor.test(DADOS_POLI$CASOS, DADOS_POLI$TEMPERATURA, method = "spearman", exact = FALSE),
+  casos_umid  = cor.test(DADOS_POLI$CASOS, DADOS_POLI$UMIDADE, method = "spearman", exact = FALSE),
+  casos_chuva = cor.test(DADOS_POLI$CASOS, DADOS_POLI$PRECIPITACAO, method = "spearman", exact = FALSE)
+)
+
+corr_global
+
+```
+
+- Temperatura: p = -0.3008 --> Quando a temperatura média aumenta, tende a haver redução no número de casos. Essa associação é moderada e, estatisticamente, através do p-valor ( < 2.2e-16), podemos afirmar que o padrão é consistente e dificilmente aleatório. Correlação negativa moderada e significativa. 
+
+- Umidade: p = +0.3078 --> Quando a umidade relativa aumenta, tende a haver aumento no número de casos. Essa associação é moderada e, estatisticamente, através do p-valor ( < 2.2e-16), podemos afirmar que o padrão é consistente e dificilmente aleatório. Correlação positiva moderada e significativa.
+
+- Precipitação: p = +0.0949 --> A chuva tem correlação positiva, mas fraca, indicando que há uma tendência de mais casos em peíodos chuvosos, embora o efeito seja pequeno comparado a temperatura e umidade. Ainda assim, o p-valor baixo mostra que é estatisticamente detectável, provavelmente pela amostra grande.
+
+----
+
+```{r}
+
+# função para um gráfico: x = variável climática, y = Casos
+plot_loess <- function(df, var, label){
+  rho <- suppressWarnings(cor(df$CASOS, df[[var]], method = "spearman", use = "complete.obs"))
+  ggplot(df, aes(x = .data[[var]], y = CASOS, color = ESTACAO)) +
+    geom_point(alpha = 0.3, size = 1.2) +
+    geom_smooth(method = "loess", se = FALSE, linewidth = 1) +
+    scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+    labs(
+      x = label, y = "Casos de leptospirose",
+      title = paste0("Casos vs. ", label, " (LOESS)"),
+      subtitle = paste0("Spearman ρ = ", round(rho, 3))
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom")
+}
+
+```
+
+----
+
+```{r}
+
+g_temp  <- plot_loess(DADOS_POLI, "TEMPERATURA",  "Temperatura (°C)")
+
+g_temp
+
+```
+
+- A linha LOEES mostra uma tendência de queda suave nos casos conforme a temperatura se eleva. 
+
+- Há maior densidade de casos entre 18 - 23°C e, em temperaturas mais altas, quase não há casos, o que reforça o padrão negativo. 
+
+----
+
+```{r}
+
+g_umid  <- plot_loess(DADOS_POLI, "UMIDADE", "Umidade relativa (%)")
+
+g_umid
+
+```
+
+- Em níveis baixos de umidade (abaixo de 60%), quase não há registros de casos (as linhas ficam próximas a zero).
+
+- A partir de 70–80% de umidade, nota-se uma elevação gradual na frequência de casos, com picos visíveis próximos a 85–90%.
+
+- As curvas (especialmente nas estações mais úmidas, como outono e verão) mostram um crescimento acentuado dos casos à medida que a umidade aumenta.
+
+----
+
+```{r}
+
+g_chuva <- plot_loess(DADOS_POLI, "PRECIPITACAO", "Precipitação (mm)")
+
+g_chuva
+
+```
+
+- Existe uma leve tendência de aumento dos casos com o acréscimo da precipitação, mas essa relação não é forte nem linear.
+
+- A dispersão de pontos mostra grande variação de casos, mas a maioria ocorre com chuvas inferiores a 150 mm/mês.
+
+- As curvas LOESS (especialmente no outono e verão) apresentam leve inclinação ascendente, indicando que, em meses mais chuvosos, há uma tendência discreta de elevação nos casos.
+
+- Entretanto, essa tendência não se intensifica em precipitações muito altas (>200 mm), o que mostra saturação — ou seja, o excesso de chuva pode até reduzir a concentração da bactéria ou limitar o contato humano com o ambiente contaminado.
+
+----
+
+```{r correlação por estado}
+
+corr_por_uf <- DADOS_POLI |>
+  group_by(ESTADO) |>
+  summarise(
+    rho_temp  = suppressWarnings(cor(CASOS, TEMPERATURA, method = "spearman", use = "complete.obs")),
+    rho_umid  = suppressWarnings(cor(CASOS, UMIDADE,     method = "spearman", use = "complete.obs")),
+    rho_chuva = suppressWarnings(cor(CASOS, PRECIPITACAO, method = "spearman", use = "complete.obs")),
+    n = n()
+  ) |>
+  arrange(desc(abs(rho_temp)))
+
+print(corr_por_uf, n = Inf)
+
+```
+
+- TEMPERATURA: predominância de correlações negativas fracas a moderadas em boa parte dos estados. 
+
+Acre (–0.397) apresenta a associação mais forte: à medida que a temperatura sobe, os casos caem — reforçando que o calor intenso reduz a sobrevivência da Leptospira spp.. Em síntese: regiões quentes e úmidas mostram o padrão inverso mais evidente (mais casos com temperaturas mais amenas).
+
+- UMIDADE: valores mais consistentes de correlação positiva em todo o país. Destaque para Sergipe (0.469) e Acre (0.322) — correlação moderada positiva, confirmando que ambientes mais úmidos favorecem a ocorrência da leptospirose. Poucos estados têm valores negativos (RN, CE, MT, PB, PA), e mesmo assim muito fracos (ρ > –0.17).
+
+A umidade é a variável climática mais consistentemente associada à leptospirose, reforçando o papel da umidade ambiental na viabilidade da Leptospira spp. e na disseminação por água contaminada.
+
+- PRECIPITAÇÃO: as correlações são fracas e variáveis. Os maiores valores positivos aparecem no Acre (0.225) e em Rondônia (0.236) — ambos na Amazônia, regiões onde a chuva está intimamente ligada à formação de áreas alagadas.No restante do país, as correlações são próximas de zero, com pequeno predomínio de valores positivos.
+
+A chuva atua indiretamente, criando condições de umidade e alagamento, mas não explica sozinha as variações de casos. Ou seja, é o acúmulo de precipitação em conjunto com a umidade e temperaturas amenas que define o cenário mais favorável à doença.
+
+----
+
+```{r}
+
+plot_loess_facet <- function(df, var, label){
+  ggplot(df, aes(x = .data[[var]], y = CASOS)) +
+    geom_point(alpha = 0.25, size = 0.9) +
+    geom_smooth(method = "loess", se = FALSE, linewidth = 0.8, color = "steelblue") +
+    facet_wrap(~ ESTADO, scales = "free", ncol = 6) +
+    scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+    labs(x = label, y = "Casos de leptospirose",
+         title = paste0("Casos vs. ", label, " por Estado (LOESS)")) +
+    theme_minimal(base_size = 11)
+}
+
+g_temp_est  <- plot_loess_facet(DADOS_POLI, "TEMPERATURA", "Temperatura (°C)")
+g_umid_est  <- plot_loess_facet(DADOS_POLI, "UMIDADE", "Umidade relativa (%)")
+g_chuva_est <- plot_loess_facet(DADOS_POLI, "PRECIPITACAO", "Precipitação (mm)")
+
+g_temp_est; g_umid_est; g_chuva_est
+
+
+```
+
+----
+
+### _**KRUSKAL-WALLIS PARA CASOS ENTRE ESTAÇÕES**_
+
+```{r}
+
+kw_casos <- kruskal.test(DADOS_POLI, CASOS ~ ESTACAO)
+
+kw_casos
+
+```
+
+O p-valor é extremamente baixo (< 0.001), rejeitando a hipótese nula.Portanto, há diferença significativa no número de casos de leptospirose entre as estações do ano. A incidência de casos varia sazonalmente.
+
+----
+
+```{r}
+
+dunn_casos <- dunnTest(CASOS ~ ESTACAO, data = DADOS_POLI, method = "bonferroni")
+
+print(dunn_casos)
+
+```
+
+- Outono e Primavera apresentam valores significativamente diferentes entre si e em relação ao Verão e Inverno que não diferem entre si, sugerindo que os extremos de temperatura (mais quente e mais frio) têm incidências semelhantes.
+
+- As maiores diferenças ocorrem entre Primavera × Outono e Primavera × Verão, o que reflete transições sazonais com aumento ou queda brusca de casos.
+
+O padrão sugere que a leptospirose tem comportamento sazonal, com picos concentrados em meses de transição climática, especialmente no outono e na primavera, quando há: Chuvas mais intensas e irregulares, Maior umidade, e Temperaturas amenas que favorecem a persistência da Leptospira spp. no ambiente.
+
+O Verão pode apresentar chuvas, mas o calor excessivo pode reduzir a sobrevivência do agente. Já o Inverno, mais seco em boa parte do país, mostra redução natural da transmissão.
+
+Isso reforça a sazonalidade climática da leptospirose, ligada à combinação de chuva, umidade e temperatura amena, em concordância com o comportamento observado nos gráficos e nas correlações climáticas.
+
+----
+
+```{r}
+
+kw_temp  <- kruskal.test(DADOS_POLI, TEMPERATURA ~ ESTACAO)
+
+kw_temp
+
+```
+
+```{r}
+
+kw_umid  <- kruskal.test(DADOS_POLI, UMIDADE ~ ESTACAO)
+
+kw_umid
+
+```
+
+```{r}
+
+kw_chuva <- kruskal.test(DADOS_POLI, PRECIPITACAO ~ ESTACAO)
+
+kw_chuva
+
+```
+
+
+As três variáveis (temperatura, umidade e precipitação) não têm distribuições homogêneas ao longo das estações. Isso confirma que o clima muda significativamente entre as estações, o que justifica a variação sazonal da leptospirose observada nos testes anteriores. Reforça a hipótese de que as mudanças ambientais sazonais são um dos principais moduladores da incidência da doença.
+
+----
+
+### _**MODELO GLM PARA CONTAGEM DE CASOS**_
+
+```{r}
+
+# Poisson inicial
+m_pois <- glm(
+  CASOS ~ TEMPERATURA + UMIDADE + PRECIPITACAO + ESTADO + ANO,
+  data = DADOS_POLI, family = poisson(link = "log")
+)
+summary(m_pois)
+
+```
+
+```{r}
+
+# Checagem simples de superdispersão
+disp <- sum(residuals(m_pois, type="pearson")^2) / m_pois$df.residual
+disp  # regra prática: > 1.5 sugere superdispersão
+
+```
+
+```{r}
+
+m_nb <- glm.nb(
+    CASOS ~ TEMPERATURA + UMIDADE + PRECIPITACAO + ESTADO + ANO,
+    data = DADOS_POLI, link = log
+  )
+
+summary(m_nb)
+
+```
+
+```{r razões de incidência}
+  
+irr <- broom::tidy(m_nb, conf.int = TRUE, exponentiate = TRUE)
+print(irr, n = Inf)
+
+```
+
+- As IRR representam a variação proporcional esperada na taxa de casos para cada aumento unitário nas variáveis explicativas (temperatura, umidade, precipitação etc.), mantendo as demais constantes.
+
+IRR > 1: o aumento da variável eleva a incidência esperada.
+
+IRR < 1: o aumento da variável reduz a incidência esperada.
+
+- TEMPERATURA: IRR ≈ 1.00 → efeito neutro ou muito pequeno; cada aumento unitário (1 °C) não altera significativamente a taxa esperada de casos (p ≈ 0.18).
+
+- UMIDADE: IRR ≈ 1.03 → para cada ponto percentual de aumento na umidade relativa, há aumento estimado de 3% na taxa de casos, p < 0.001.
+
+- PRECIPITAÇÃO: IRR ≈ 1.00 → efeito próximo de nulo em termos médios, mas ainda positivo; p < 0.001 sugere que mesmo pequenas variações têm impacto, embora o efeito absoluto seja pequeno.
+
+A umidade é o fator climático mais fortemente associado à incidência de leptospirose.
+
+- ANO: há tendência de queda moderada na incidência de leptospirose ao longo do tempo, possivelmente associada a melhorias sanitárias, campanhas e vigilância.
+
+```{r diagnóstico de superdispersão poisson}
+
+diag_df <- data.frame(
+  Ajustado = fitted(m_pois),
+  Residuos = residuals(m_pois, type = "pearson")
+)
+
+
+plot(diag_df$Ajustado, diag_df$Residuos,
+     xlab = "Valores ajustados (μ̂)",
+     ylab = "Resíduos de Pearson",
+     main = "Diagnóstico de Superdispersão - Modelo Poisson",
+     pch = 19, col = rgb(0, 0, 1, 0.4))
+abline(h = 0, lwd = 2, col = "red")
+
+
+lines(lowess(diag_df$Ajustado, diag_df$Residuos), col = "darkorange", lwd = 2)
+
+```
+
+- A variabilidade dos resíduos aumenta à medida que os valores ajustados crescem (“abertura de funil”).
+
+- Muitos resíduos estão muito acima e abaixo da linha de referência (0), com valores de Pearson que ultrapassam 20, 40 e até 60 - isso indica que a variância dos dados observados é muito maior que a média estimada, caracterizando superdispersão.
+
+- A linha vermelha de tendência não é horizontal — há tendência negativa, mostrando que o modelo falha em capturar a estrutura dos dados. 
+
+```{r}
+diag_nb <- data.frame(Ajustado = fitted(m_nb),
+                      Residuos = residuals(m_nb, type = "pearson"))
+
+plot(diag_nb$Ajustado, diag_nb$Residuos,
+     xlab = "Valores ajustados (μ̂)",
+     ylab = "Resíduos de Pearson",
+     main = "Diagnóstico - Modelo Binomial Negativo",
+     pch = 19, col = rgb(0, 0.5, 0, 0.4))
+abline(h = 0, col = "red", lwd = 2)
+lines(lowess(diag_nb$Ajustado, diag_nb$Residuos), col = "darkorange", lwd = 2)
+
+```
+
+- Os resíduos estão muito mais próximos da linha zero, concentrando-se em torno da média esperada.
+
+- A faixa vertical de dispersão é estreita — ou seja, a variância dos resíduos não cresce de forma sistemática com os valores ajustados.
+
+- A linha vermelha (tendência) é praticamente horizontal, indicando ausência de viés sistemático.
+
+- Os valores extremos (outliers) são poucos e muito menores que no modelo Poisson — antes chegavam a > 60, agora não passam de ~20.
+
+```{r comparação AIC tabela}
+
+dispersion <- function(mod) {
+  sum(residuals(mod, type = "pearson")^2) / df.residual(mod)
+}
+
+disp_pois <- dispersion(m_pois)
+disp_nb   <- dispersion(m_nb)
+
+comparacao <- tibble::tibble(
+  Modelo      = c("Poisson", "NegBin"),
+  AIC         = c(AIC(m_pois), AIC(m_nb)),
+  Dispersao   = c(disp_pois, disp_nb),
+  Theta_NegBin= c(NA_real_, m_nb$theta)
+)
+
+print(comparacao)
+
+```
+
+Diferença ≈ 10 400 pontos: indica que o modelo binomial negativo tem ajuste muito superior e descreve os dados com muito mais verossimilhança.
+
+```{r grafico comparativo AIC}
+
+g_aic <- ggplot(comparacao, aes(x = Modelo, y = AIC)) +
+  geom_col() +
+  ggtitle("Comparacao de AIC") +
+  theme_minimal(base_size = 12)
+
+print(g_aic)
+
+```
+
+
+```{r gráfico dispersão}
+
+g_disp <- ggplot(comparacao, aes(x = Modelo, y = Dispersao)) +
+  geom_col() +
+  ggtitle("Comparacao da Razao de Dispersao (Pearson)") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  theme_minimal(base_size = 12)
+
+
+print(g_disp)
+
+```
+
+
+```{r}
+
+vars_modelo <- c("CASOS", "TEMPERATURA", "UMIDADE", "PRECIPITACAO", "ESTADO", "ANO")
+dados_sem_na <- DADOS_POLI[complete.cases(DADOS_POLI[, vars_modelo]), ]
+
+
+modelo_filtrado <- glm.nb(CASOS ~ TEMPERATURA + UMIDADE + PRECIPITACAO + ESTADO + ANO,
+                         data = dados_sem_na)
+
+modelo_step <- stepAIC(modelo_filtrado)
+
+summary(modelo_step)
+
+# stepGLM1 <- stepAIC(m_nb)
+# summary(stepGLM1)
+
+```
